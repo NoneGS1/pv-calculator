@@ -2,15 +2,16 @@ import { useState, useCallback, useMemo } from "react";
 
 const DEFAULT_PARAMS = {
   pvPower: 50,
-  pvUnitCost: 2_370_000,   // UZS/kW (≈ $186 * 12,750)
+  pvTotalCost: 9300,       // USD total (CPV)
   comPercent: 1.0,
   eom: 2.7,
   epv: 1510,
   fEpv: 0.5,
-  pEpv: 2300,              // UZS/kWh
+  pEpv: 0.18,              // USD/kWh
   ep: 2.2,
   d: 7.5,
   n: 25,
+  useLoan: true,
   ownCapitalPercent: 25,
   loanYears: 15,
   loanRate: 4.0,
@@ -24,11 +25,12 @@ function computeLoanPayment(principal, annualRate, years) {
 }
 
 function calculate(p) {
-  const cpv = p.pvPower * p.pvUnitCost;
+  const cpv = p.pvTotalCost * p.exchangeRate;
   const com = (p.comPercent / 100) * cpv;
-  const ownCapital = (p.ownCapitalPercent / 100) * cpv;
-  const loanPrincipal = cpv - ownCapital;
-  const annualLoanPayment = computeLoanPayment(loanPrincipal, p.loanRate, p.loanYears);
+  const ownCapital = p.useLoan ? (p.ownCapitalPercent / 100) * cpv : cpv;
+  const loanPrincipal = p.useLoan ? cpv - ownCapital : 0;
+  const annualLoanPayment = p.useLoan ? computeLoanPayment(loanPrincipal, p.loanRate, p.loanYears) : 0;
+  const loanYears = p.useLoan ? p.loanYears : 0;
   const dRate = p.d / 100;
   const fDeg = p.fEpv / 100;
   const eomRate = p.eom / 100;
@@ -41,7 +43,7 @@ function calculate(p) {
     let annualCost;
     if (t === 0) {
       annualCost = ownCapital;
-    } else if (t <= p.loanYears) {
+    } else if (t <= loanYears) {
       annualCost = annualLoanPayment + omCost;
     } else {
       annualCost = omCost;
@@ -49,7 +51,7 @@ function calculate(p) {
     costSum += annualCost / Math.pow(1 + dRate, t);
     if (t >= 1) {
       const energy = p.pvPower * p.epv * Math.pow(1 - fDeg, t - 1);
-      energySum += energy / Math.pow(1 + dRate, t - 1);
+      energySum += energy / Math.pow(1 + dRate, t);
     }
   }
   const lcoe = energySum > 0 ? costSum / energySum : 0;
@@ -57,9 +59,9 @@ function calculate(p) {
   const cashFlows = [-ownCapital];
   for (let t = 1; t <= p.n; t++) {
     const energy = p.pvPower * p.epv * Math.pow(1 - fDeg, t - 1);
-    const revenue = energy * p.pEpv * Math.pow(1 + epRate, t - 1);
+    const revenue = energy * p.pEpv * p.exchangeRate * Math.pow(1 + epRate, t - 1);
     const omCost = com * Math.pow(1 + eomRate, t - 1);
-    const loan = t <= p.loanYears ? annualLoanPayment : 0;
+    const loan = t <= loanYears ? annualLoanPayment : 0;
     cashFlows.push(revenue - omCost - loan);
   }
 
@@ -110,7 +112,45 @@ function fmtUsd(val) {
   return val.toFixed(0);
 }
 
-function InputField({ label, unit, value, onChange, step = 1, min = 0, tooltip }) {
+function Tooltip({ text }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <span style={{ position: "relative", display: "inline-flex" }}>
+      <span
+        onMouseEnter={() => setVisible(true)}
+        onMouseLeave={() => setVisible(false)}
+        style={{
+          cursor: "help", fontSize: 11, background: "#2a3a52",
+          borderRadius: "50%", width: 16, height: 16, display: "inline-flex",
+          alignItems: "center", justifyContent: "center", color: "#5b9cf6",
+          fontWeight: 700, userSelect: "none",
+        }}
+      >?</span>
+      {visible && (
+        <span style={{
+          position: "absolute", left: "50%", bottom: "calc(100% + 6px)",
+          transform: "translateX(-50%)",
+          background: "#1a2d45", border: "1px solid #2e4a6a",
+          borderRadius: 8, padding: "8px 12px",
+          fontSize: 11, color: "#c8d9ed", lineHeight: 1.5,
+          whiteSpace: "normal", width: 200, zIndex: 100,
+          boxShadow: "0 4px 16px #00000066",
+          pointerEvents: "none",
+        }}>
+          {text}
+          <span style={{
+            position: "absolute", left: "50%", top: "100%",
+            transform: "translateX(-50%)",
+            borderWidth: "5px 5px 0", borderStyle: "solid",
+            borderColor: "#2e4a6a transparent transparent",
+          }} />
+        </span>
+      )}
+    </span>
+  );
+}
+
+function InputField({ label, sublabel, unit, value, onChange, step = 1, min = 0, tooltip }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <label style={{
@@ -118,16 +158,12 @@ function InputField({ label, unit, value, onChange, step = 1, min = 0, tooltip }
         fontSize: 13, color: "#8a9bb5", fontFamily: "'DM Sans', sans-serif",
         letterSpacing: "0.02em",
       }}>
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          {label}
-          {tooltip && (
-            <span title={tooltip} style={{
-              cursor: "help", fontSize: 11, background: "#2a3a52",
-              borderRadius: "50%", width: 16, height: 16, display: "inline-flex",
-              alignItems: "center", justifyContent: "center", color: "#5b9cf6",
-              fontWeight: 700,
-            }}>?</span>
-          )}
+        <span style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            {label}
+            {tooltip && <Tooltip text={tooltip} />}
+          </span>
+          {sublabel && <span style={{ fontSize: 10, color: "#4a6080", fontStyle: "italic" }}>{sublabel}</span>}
         </span>
         {unit && <span style={{ color: "#5b7a9e", fontSize: 11 }}>{unit}</span>}
       </label>
@@ -148,7 +184,8 @@ function InputField({ label, unit, value, onChange, step = 1, min = 0, tooltip }
   );
 }
 
-function ResultCard({ label, uzsValue, usdValue, unit, color, subtitle }) {
+function ResultCard({ label, uzsValue, usdValue, unit, usdUnit, color, subtitle }) {
+  const hasUsd = usdValue !== undefined;
   return (
     <div style={{
       background: `linear-gradient(135deg, ${color}18, ${color}08)`,
@@ -164,11 +201,14 @@ function ResultCard({ label, uzsValue, usdValue, unit, color, subtitle }) {
         fontSize: 24, fontWeight: 700, color,
         fontFamily: "'JetBrains Mono', monospace", lineHeight: 1.1,
       }}>
-        {uzsValue}<span style={{ fontSize: 12, opacity: 0.7, marginLeft: 4 }}>{unit ? unit : "UZS"}</span>
+        {hasUsd ? "$" : ""}{hasUsd ? usdValue : uzsValue}
+        <span style={{ fontSize: 12, opacity: 0.7, marginLeft: 4 }}>
+          {hasUsd ? (usdUnit || "USD") : (unit || "")}
+        </span>
       </div>
-      {usdValue !== undefined && (
-        <div style={{ fontSize: 12, color: "#8a9bb5", marginTop: 3, fontFamily: "'JetBrains Mono', monospace" }}>
-          ≈ ${usdValue} <span style={{ opacity: 0.6 }}>USD</span>
+      {hasUsd && (
+        <div style={{ fontSize: 11, color: "#6b7f9e", marginTop: 3, fontFamily: "'JetBrains Mono', monospace" }}>
+          {uzsValue} <span style={{ opacity: 0.7 }}>{unit || "UZS"}</span>
         </div>
       )}
       {subtitle && <div style={{ fontSize: 11, color: "#6b7f9e", marginTop: 4 }}>{subtitle}</div>}
@@ -214,7 +254,7 @@ export default function PVCalculator() {
   const update = useCallback((key, val) => setParams(prev => ({ ...prev, [key]: val })), []);
   const results = useMemo(() => calculate(params), [params]);
   const rate = params.exchangeRate;
-  const gridParity = results.lcoe < params.pEpv;
+  const gridParity = results.lcoe < params.pEpv * rate;
 
   return (
     <div style={{
@@ -270,23 +310,61 @@ export default function PVCalculator() {
             <div style={{ fontSize: 13, fontWeight: 600, color: "#5b9cf6", marginBottom: 14, textTransform: "uppercase", letterSpacing: "0.05em" }}>
               System Parameters
             </div>
-            <InputField label="PV Power" unit="kW" value={params.pvPower} onChange={v => update("pvPower", v)} step={5} tooltip="Installed PV capacity in kilowatts" />
-            <InputField label="PV Unit Cost" unit="UZS/kW" value={params.pvUnitCost} onChange={v => update("pvUnitCost", v)} step={10000} tooltip="Cost per kW in Uzbekistani Som" />
-            <InputField label="O&M Cost" unit="% of Cpv/yr" value={params.comPercent} onChange={v => update("comPercent", v)} step={0.1} tooltip="Annual O&M cost as % of total system cost" />
-            <InputField label="O&M Escalation" unit="%/yr" value={params.eom} onChange={v => update("eom", v)} step={0.1} tooltip="Annual escalation rate of O&M costs" />
-            <InputField label="Annual PV Yield" unit="kWh/kW/yr" value={params.epv} onChange={v => update("epv", v)} step={10} tooltip="Annual electricity production per kW" />
-            <InputField label="Degradation Factor" unit="%/yr" value={params.fEpv} onChange={v => update("fEpv", v)} step={0.1} tooltip="Annual panel efficiency degradation" />
+            <InputField label="PV Power" sublabel="capacity (kW)" unit="kW" value={params.pvPower} onChange={v => update("pvPower", v)} step={5} tooltip="Installed PV capacity in kilowatts" />
+            <InputField label="Total PV Cost" sublabel="Cpv (USD)" unit="USD" value={params.pvTotalCost} onChange={v => update("pvTotalCost", v)} step={100} tooltip="Total capital cost of the PV system in USD (Cpv). Independent of capacity — changing PV Power alone will affect LCOE." />
+            <InputField label="O&M Cost" sublabel="COM (% of Cpv/yr)" unit="% of Cpv/yr" value={params.comPercent} onChange={v => update("comPercent", v)} step={0.1} tooltip="Annual O&M cost as % of total system cost" />
+            <InputField label="O&M Escalation" sublabel="EOM (%/yr)" unit="%/yr" value={params.eom} onChange={v => update("eom", v)} step={0.1} tooltip="Annual escalation rate of O&M costs" />
+            <InputField label="Annual PV Yield" sublabel="EPV (kWh/kW/yr)" unit="kWh/kW/yr" value={params.epv} onChange={v => update("epv", v)} step={10} tooltip="Annual electricity production per kW" />
+            <InputField label="Degradation Factor" sublabel="fEPV (%/yr)" unit="%/yr" value={params.fEpv} onChange={v => update("fEpv", v)} step={0.1} tooltip="Annual panel efficiency degradation" />
 
             <div style={{ fontSize: 13, fontWeight: 600, color: "#5b9cf6", margin: "18px 0 14px", textTransform: "uppercase", letterSpacing: "0.05em" }}>
               Financial Parameters
             </div>
-            <InputField label="Electricity Price" unit="UZS/kWh" value={params.pEpv} onChange={v => update("pEpv", v)} step={50} tooltip="Current retail electricity price in UZS" />
-            <InputField label="Electricity Price Increase" unit="%/yr" value={params.ep} onChange={v => update("ep", v)} step={0.1} tooltip="Annual real increase in electricity price" />
-            <InputField label="Discount Rate (WACC)" unit="%" value={params.d} onChange={v => update("d", v)} step={0.5} tooltip="Weighted average cost of capital" />
-            <InputField label="System Lifetime" unit="years" value={params.n} onChange={v => update("n", v)} step={1} tooltip="Serviceable life of PV system" />
-            <InputField label="Own Capital" unit="%" value={params.ownCapitalPercent} onChange={v => update("ownCapitalPercent", v)} step={5} tooltip="Percentage financed with own capital" />
-            <InputField label="Loan Period" unit="years" value={params.loanYears} onChange={v => update("loanYears", v)} step={1} tooltip="Bank loan depreciation period" />
-            <InputField label="Loan Interest Rate" unit="%/yr" value={params.loanRate} onChange={v => update("loanRate", v)} step={0.25} tooltip="Annual interest rate on bank loan" />
+            <InputField label="Electricity Price" sublabel="P (EPV) (USD/kWh)" unit="USD/kWh" value={params.pEpv} onChange={v => update("pEpv", v)} step={0.001} tooltip="Current retail electricity price in USD" />
+            <InputField label="Electricity Price Increase" sublabel="ΔP (%/yr)" unit="%/yr" value={params.ep} onChange={v => update("ep", v)} step={0.1} tooltip="Annual real increase in electricity price" />
+            <InputField label="Discount Rate (WACC)" sublabel="d (%)" unit="%" value={params.d} onChange={v => update("d", v)} step={0.5} tooltip="Weighted average cost of capital" />
+            <InputField label="System Lifetime" sublabel="n (years)" unit="years" value={params.n} onChange={v => update("n", v)} step={1} tooltip="Serviceable life of PV system" />
+
+            {/* Loan Toggle */}
+            <div style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "10px 14px", borderRadius: 10, marginBottom: 14,
+              background: params.useLoan ? "#0e2240" : "#111e30",
+              border: `1px solid ${params.useLoan ? "#1e4070" : "#1e3050"}`,
+              transition: "all 0.2s",
+            }}>
+              <div>
+                <div style={{ fontSize: 13, color: "#c8d9ed", fontWeight: 500 }}>Bank Loan</div>
+                <div style={{ fontSize: 10, color: "#4a6080", fontStyle: "italic" }}>
+                  {params.useLoan ? "Part-financed by loan" : "100% own capital"}
+                </div>
+              </div>
+              <div
+                onClick={() => update("useLoan", !params.useLoan)}
+                style={{
+                  width: 42, height: 24, borderRadius: 12, cursor: "pointer",
+                  background: params.useLoan ? "#4a90d9" : "#2a3f5c",
+                  position: "relative", transition: "background 0.2s",
+                  flexShrink: 0,
+                }}
+              >
+                <div style={{
+                  position: "absolute", top: 3,
+                  left: params.useLoan ? 20 : 3,
+                  width: 18, height: 18, borderRadius: "50%",
+                  background: "#fff", transition: "left 0.2s",
+                  boxShadow: "0 1px 4px #00000055",
+                }} />
+              </div>
+            </div>
+
+            {params.useLoan && (
+              <>
+                <InputField label="Own Capital" sublabel="own capital (%)" unit="%" value={params.ownCapitalPercent} onChange={v => update("ownCapitalPercent", v)} step={5} tooltip="Percentage financed with own capital" />
+                <InputField label="Loan Period" sublabel="loan years" unit="years" value={params.loanYears} onChange={v => update("loanYears", v)} step={1} tooltip="Bank loan depreciation period" />
+                <InputField label="Loan Interest Rate" sublabel="loan rate (%/yr)" unit="%/yr" value={params.loanRate} onChange={v => update("loanRate", v)} step={0.25} tooltip="Annual interest rate on bank loan" />
+              </>
+            )}
           </div>
 
           {/* Results Panel */}
@@ -295,16 +373,19 @@ export default function PVCalculator() {
             <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
               <ResultCard
                 label="LCOE"
-                uzsValue={results.lcoe.toFixed(1)}
+                uzsValue={`${results.lcoe.toFixed(1)} UZS/kWh`}
                 usdValue={(results.lcoe / rate).toFixed(4)}
-                unit="UZS/kWh"
+                usdUnit="USD/kWh"
+                unit=""
                 color="#4ecdc4"
                 subtitle={gridParity ? "✓ Grid parity reached" : "✗ Above grid price"}
               />
               <ResultCard
                 label="NPV"
-                uzsValue={fmtUzs(results.npv)}
+                uzsValue={`${fmtUzs(results.npv)} UZS`}
                 usdValue={fmtUsd(results.npv / rate)}
+                usdUnit="USD"
+                unit=""
                 color={results.npv >= 0 ? "#5b9cf6" : "#e85d75"}
                 subtitle={results.npv >= 0 ? "Profitable" : "Loss"}
               />
@@ -343,8 +424,8 @@ export default function PVCalculator() {
                   {gridParity ? "Grid Parity Achieved" : "Grid Parity Not Reached"}
                 </div>
                 <div style={{ fontSize: 12, color: "#6b7f9e" }}>
-                  LCOE {results.lcoe.toFixed(1)} UZS/kWh vs Grid {params.pEpv.toFixed(1)} UZS/kWh
-                  {" "}({gridParity ? "saving" : "costing"} {Math.abs((params.pEpv - results.lcoe) * 100 / params.pEpv).toFixed(1)}% {gridParity ? "less" : "more"})
+                  LCOE {results.lcoe.toFixed(1)} UZS/kWh vs Grid {(params.pEpv * rate).toFixed(1)} UZS/kWh
+                  {" "}({gridParity ? "saving" : "costing"} {Math.abs((params.pEpv * rate - results.lcoe) * 100 / (params.pEpv * rate)).toFixed(1)}% {gridParity ? "less" : "more"})
                 </div>
               </div>
             </div>
@@ -361,9 +442,11 @@ export default function PVCalculator() {
                 {[
                   ["Total System Cost", results.cpv, results.cpv / rate],
                   ["Own Capital", results.ownCapital, results.ownCapital / rate],
-                  ["Loan Amount", results.loanPrincipal, results.loanPrincipal / rate],
-                  ["Annual Loan Payment", results.annualLoanPayment, results.annualLoanPayment / rate],
-                  ["Year-1 Revenue", params.pvPower * params.epv * params.pEpv, (params.pvPower * params.epv * params.pEpv) / rate],
+                  ...(params.useLoan ? [
+                    ["Loan Amount", results.loanPrincipal, results.loanPrincipal / rate],
+                    ["Annual Loan Payment", results.annualLoanPayment, results.annualLoanPayment / rate],
+                  ] : []),
+                  ["Year-1 Revenue", params.pvPower * params.epv * params.pEpv * rate, params.pvPower * params.epv * params.pEpv],
                 ].map(([k, uzs, usd], i) => (
                   <>
                     <div key={`k${i}`} style={{ color: "#6b7f9e", padding: "5px 0", borderBottom: "1px solid #1a2d45" }}>{k}</div>
