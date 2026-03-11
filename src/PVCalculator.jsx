@@ -156,203 +156,334 @@ function fmtLcoe(uzsPerKwh, currency, rate) {
 
 // ── Excel export ─────────────────────────────────────────────────────────────
 
-function makeSummarySheet(params, results, currency) {
-  const rate = params.exchangeRate;
-  const isUsd = currency === "USD";
-  const sym = isUsd ? "USD" : "UZS";
-  const cv = v => isUsd ? +(v / rate).toFixed(2) : +v.toFixed(0);  // convert UZS → display currency
-  const yr1Rev = params.pvPower * params.epv * params.pEpv * rate;
-
-  const rows = [
-    [`SOLAR PV INVESTMENT CALCULATOR — SUMMARY (${sym})`],
-    [],
-    ["INPUTS", "VALUE", "UNIT"],
-    ["PV Power", params.pvPower, "kW"],
-    ["Total PV Cost", isUsd ? params.pvTotalCost : +(params.pvTotalCost * rate).toFixed(0), sym],
-    ["O&M Cost", params.comPercent, "% of Cpv/yr"],
-    ["O&M Escalation", params.eom, "%/yr"],
-    ["Annual PV Yield", params.epv, "kWh/kW/yr"],
-    ["Degradation Factor", params.fEpv, "%/yr"],
-    ["Electricity Price", isUsd ? params.pEpv : +(params.pEpv * rate).toFixed(2), `${sym}/kWh`],
-    ["Electricity Price Increase", params.ep, "%/yr"],
-    ["Discount Rate (WACC)", params.d, "%"],
-    ["System Lifetime", params.n, "years"],
-    ["Exchange Rate", rate, "UZS per USD"],
-    ["Financing", params.useLoan ? "Loan + Own Capital" : "100% Own Capital", ""],
-    ...(params.useLoan ? [
-      ["Own Capital", params.ownCapitalPercent, "%"],
-      ["Loan Period", params.loanYears, "years"],
-      ["Loan Interest Rate", params.loanRate, "%/yr"],
-    ] : []),
-    [],
-    ["RESULTS", `VALUE (${sym})`, "UNIT"],
-    ["Total System Cost (Cpv)", cv(results.cpv), sym],
-    ["Own Capital", cv(results.ownCapital), sym],
-    ...(params.useLoan ? [
-      ["Loan Principal", cv(results.loanPrincipal), sym],
-      ["Annual Loan Payment", cv(results.annualLoanPayment), sym],
-    ] : []),
-    ["LCOE", cv(results.lcoe), `${sym}/kWh`],
-    ["NPV", cv(results.npv), sym],
-    ["IRR", +results.irr.toFixed(2), "%"],
-    ["DPBT", +results.dpbt.toFixed(1), "years"],
-    ["Year-1 Revenue", cv(yr1Rev), sym],
-    ["Year-1 Energy Output", params.pvPower * params.epv, "kWh"],
-  ];
-
-  const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws["!cols"] = [{ wch: 28 }, { wch: 18 }, { wch: 14 }];
-  return ws;
-}
-
-function makeCashFlowSheet(params, results, currency) {
-  const rate = params.exchangeRate;
+function makeSummaryComparisonSheet(profiles, currency) {
+  if (profiles.length === 0) return XLSX.utils.aoa_to_sheet([["No profiles saved"]]);
   const isUsd = currency === "USD";
   const sym = currency;
-  const cv = v => isUsd ? +(v / rate).toFixed(2) : +v.toFixed(0);
+  const cv = (v, rate) => isUsd ? +(v / rate).toFixed(2) : +v.toFixed(0);
+  const names = profiles.map(p => p.name);
+  const hdr = ["", "Unit", ...names];
 
-  const header = [
-    "Year", "Energy (kWh)",
-    `Revenue (${sym})`, `O&M Cost (${sym})`,
-    `Investment (${sym})`, `Loan Payment (${sym})`,
-    `Net Cash Flow (${sym})`, `Disc. Cash Flow (${sym})`, `Cum. NPV (${sym})`,
+  const inputSection = [
+    ["INPUTS"],
+    hdr,
+    ["PV Power", "kW", ...profiles.map(p => p.params.pvPower)],
+    ["Total PV Cost", sym, ...profiles.map(p => isUsd ? +p.params.pvTotalCost.toFixed(2) : +(p.params.pvTotalCost * p.params.exchangeRate).toFixed(0))],
+    ["O&M Cost", "% of Cpv/yr", ...profiles.map(p => p.params.comPercent)],
+    ["O&M Escalation", "%/yr", ...profiles.map(p => p.params.eom)],
+    ["Annual PV Yield", "kWh/kW/yr", ...profiles.map(p => p.params.epv)],
+    ["Degradation Factor", "%/yr", ...profiles.map(p => p.params.fEpv)],
+    ["Electricity Price", `${sym}/kWh`, ...profiles.map(p => isUsd ? p.params.pEpv : +(p.params.pEpv * p.params.exchangeRate).toFixed(2))],
+    ["Price Increase", "%/yr", ...profiles.map(p => p.params.ep)],
+    ["Discount Rate (WACC)", "%", ...profiles.map(p => p.params.d)],
+    ["System Lifetime", "years", ...profiles.map(p => p.params.n)],
+    ["Exchange Rate", "UZS/USD", ...profiles.map(p => p.params.exchangeRate)],
+    ["Financing", "", ...profiles.map(p => p.params.useLoan ? `Loan (${p.params.ownCapitalPercent}% own)` : "Own Capital")],
   ];
 
-  const dataRows = results.yearlyData.map((d, i) => {
-    const b = results.yearlyBreakdown[i];
-    return [
-      d.year,
-      +b.energy.toFixed(2),
-      cv(b.revenue),
-      cv(b.omCost),
-      b.investment > 0 ? cv(b.investment) : 0,
-      b.loan > 0 ? cv(b.loan) : 0,
-      cv(d.cf),
-      cv(b.discCf),
-      cv(d.cumNpv),
-    ];
-  });
-
-  const tot = results.yearlyBreakdown.reduce((a, b) => ({
-    energy: a.energy + b.energy, revenue: a.revenue + b.revenue,
-    omCost: a.omCost + b.omCost, investment: a.investment + b.investment,
-    loan: a.loan + b.loan, cf: a.cf + b.cf, discCf: a.discCf + b.discCf,
-  }), { energy:0, revenue:0, omCost:0, investment:0, loan:0, cf:0, discCf:0 });
-  const finalNpv = results.yearlyData[results.yearlyData.length - 1].cumNpv;
-  const totalRow = [
-    "TOTAL", +tot.energy.toFixed(2), cv(tot.revenue), cv(tot.omCost),
-    cv(tot.investment), cv(tot.loan), cv(tot.cf), cv(tot.discCf), cv(finalNpv),
+  const resultSection = [
+    [],
+    ["RESULTS"],
+    hdr,
+    ["LCOE", `${sym}/kWh`, ...profiles.map(p => cv(p.results.lcoe, p.params.exchangeRate))],
+    ["NPV", sym, ...profiles.map(p => cv(p.results.npv, p.params.exchangeRate))],
+    ["IRR", "%", ...profiles.map(p => +p.results.irr.toFixed(2))],
+    ["DPBT", "years", ...profiles.map(p => +p.results.dpbt.toFixed(1))],
+    ["Total System Cost (Cpv)", sym, ...profiles.map(p => cv(p.results.cpv, p.params.exchangeRate))],
+    ["Own Capital", sym, ...profiles.map(p => cv(p.results.ownCapital, p.params.exchangeRate))],
+    ["Year-1 Revenue", sym, ...profiles.map(p => cv(p.params.pvPower * p.params.epv * p.params.pEpv * p.params.exchangeRate, p.params.exchangeRate))],
+    ["Year-1 Energy", "kWh", ...profiles.map(p => p.params.pvPower * p.params.epv)],
   ];
-
-  const ws = XLSX.utils.aoa_to_sheet([header, ...dataRows, [], totalRow]);
-  ws["!cols"] = header.map(() => ({ wch: 20 }));
-  return ws;
-}
-
-function makeNpvSheet(params, results, currency) {
-  const rate = params.exchangeRate;
-  const isUsd = currency === "USD";
-  const sym = currency;
-  const cv = v => isUsd ? +(v / rate).toFixed(2) : +v.toFixed(0);
-
-  const header = [
-    "Year (t)",
-    `R\u209c — Revenue (${sym})`,
-    `K\u209c — Costs (${sym})`,
-    `R\u209c - K\u209c (${sym})`,
-    "(1+d)^t — Denominator",
-    `Disc. CF = (Rt-Kt)/(1+d)^t (${sym})`,
-    `\u03A3 Disc. CF = NPV (${sym})`,
-  ];
-
-  const dataRows = results.yearlyBreakdown.map((b, i) => {
-    const d = results.yearlyData[i];
-    return [b.t, cv(b.revenue), cv(b.costNumerator), cv(b.cfNumerator), +b.cfDenominator.toFixed(6), cv(b.discCf), cv(d.cumNpv)];
-  });
-
-  const totCf = results.yearlyBreakdown.reduce((a, b) => ({
-    revenue: a.revenue + b.revenue,
-    cost: a.cost + b.costNumerator,
-    cf: a.cf + b.cf,
-    discCf: a.discCf + b.discCf,
-  }), { revenue: 0, cost: 0, cf: 0, discCf: 0 });
-  const finalNpv = results.yearlyData[results.yearlyData.length - 1].cumNpv;
-  const totalRow = ["TOTAL", cv(totCf.revenue), cv(totCf.cost), cv(totCf.cf), "—", cv(totCf.discCf), cv(finalNpv)];
 
   const ws = XLSX.utils.aoa_to_sheet([
-    [`NPV = \u03A3(t=0..n) [ (Rt - Kt) / (1 + d)^t ]   |   d = ${params.d}%   |   t=0: K0=Cpv, R0=0`],
+    [`SOLAR PV INVESTMENT CALCULATOR — MULTI-PROFILE SUMMARY (${sym})`],
     [],
-    header,
-    ...dataRows,
-    [],
-    totalRow,
+    ...inputSection,
+    ...resultSection,
   ]);
-  ws["!cols"] = header.map(() => ({ wch: 24 }));
+  ws["!cols"] = [{ wch: 26 }, { wch: 14 }, ...names.map(() => ({ wch: 18 }))];
   return ws;
 }
 
-function makeLcoeSheet(params, results, currency) {
+function makeProfileDetailSheet(params, results, currency) {
   const rate = params.exchangeRate;
   const isUsd = currency === "USD";
   const sym = currency;
   const cv = v => isUsd ? +(v / rate).toFixed(2) : +v.toFixed(0);
   const cvLcoe = v => isUsd ? +(v / rate).toFixed(6) : +v.toFixed(4);
+  const n = params.n;
 
-  const header = [
-    "Year (t)",
-    `Cost\u209c Numerator (${sym})`,
-    "(1+d)^t Cost Denom.",
-    `Disc. Cost (${sym})`,
-    `\u03A3 Disc. Cost (${sym})`,
-    "Energy\u209c (kWh)",
-    "(1+d)^(t-1) Energy Denom.",
-    "Disc. Energy (kWh)",
-    "\u03A3 Disc. Energy (kWh)",
-    `Running LCOE (${sym}/kWh)`,
-  ];
+  // Convert key inputs to display currency
+  const cpv_local  = isUsd ? params.pvTotalCost : params.pvTotalCost * rate;
+  const pEpv_local = isUsd ? params.pEpv        : params.pEpv * rate;
 
-  const dataRows = results.yearlyBreakdown.map(b => {
-    const runningLcoe = b.runningEnergySum > 0 ? b.runningCostSum / b.runningEnergySum : null;
-    return [
+  const tot = results.yearlyBreakdown.reduce((a, b) => ({
+    energy: a.energy + b.energy, revenue: a.revenue + b.revenue,
+    omCost: a.omCost + b.omCost, investment: a.investment + b.investment,
+    loan: a.loan + b.loan, cf: a.cf + b.cf, discCf: a.discCf + b.discCf,
+    costNumerator: a.costNumerator + b.costNumerator, discCost: a.discCost + b.discCost,
+    discEnergy: a.discEnergy + b.discEnergy,
+  }), { energy:0, revenue:0, omCost:0, investment:0, loan:0, cf:0, discCf:0, costNumerator:0, discCost:0, discEnergy:0 });
+  const finalNpv  = results.yearlyData[results.yearlyData.length - 1].cumNpv;
+  const finalLcoe = tot.discEnergy > 0 ? tot.discCost / tot.discEnergy : 0;
+  const yr1Rev    = params.pvPower * params.epv * params.pEpv * rate;
+
+  // ── Row layout (0-indexed) ───────────────────────────────────────────────
+  // INPUTS       rows  0-15  (16 rows: title + blank + 14 param rows)
+  // DERIVED      rows 16-22  (7 rows: blank + title + blank + 4 formula rows)
+  // KEY OUTPUTS  rows 23-31  (9 rows: blank + title + blank + 6 output rows + blank)
+  //   → total preamble = 32 rows (0-31)
+  // NPV title/blank/header  rows 32-34
+  // NPV data     rows 35..35+n   (n+1 rows, NPV_DATA_START=35)
+  // NPV blank/TOTAL/blank   rows 35+n+1..35+n+3
+  //   → NPV_TOTAL_ROW = 35+n+2
+  // LCOE title/blank/header rows 35+n+4..35+n+6
+  // LCOE data    rows 35+n+7..35+2n+7  (LCOE_DATA_START=35+n+7? let me track below)
+  //
+  // Tracked dynamically via rows.length when each section starts.
+
+  const er = r => r + 1;   // 0-indexed → Excel 1-indexed
+
+  // Cached computed values for formula-cell `v` properties
+  const ownCap_v   = cv(results.ownCapital);
+  const loanP_v    = cv(results.loanPrincipal);
+  const annLoan_v  = cv(results.annualLoanPayment);
+  const comYr1_v   = cv((params.comPercent / 100) * results.cpv);
+
+  const rows = [];
+
+  // ── INPUTS (rows 0-15) ───────────────────────────────────────────────────
+  rows.push(["=== INPUTS ==="]);                                                    // 0
+  rows.push([]);                                                                     // 1
+  rows.push(["PV System Power",            params.pvPower,              "kWp"]);    // 2  → B3
+  rows.push(["Specific Energy Yield",      params.epv,                  "kWh/kWp"]);// 3 → B4
+  rows.push(["Electricity Price",          pEpv_local,                  `${sym}/kWh`]);// 4 → B5
+  rows.push(["Annual Degradation Rate",    params.fEpv,                 "%/yr"]);   // 5  → B6
+  rows.push(["Price Escalation Rate",      params.ep,                   "%/yr"]);   // 6  → B7
+  rows.push(["Discount Rate (WACC, d)",    params.d,                    "%"]);      // 7  → B8
+  rows.push(["System Lifetime (n)",        params.n,                    "years"]);  // 8  → B9
+  rows.push(["Total System Cost (Cpv)",    cpv_local,                   sym]);      // 9  → B10
+  rows.push(["O&M Rate",                   params.comPercent,           "% of Cpv"]);// 10 → B11
+  rows.push(["O&M Escalation Rate",        params.eom,                  "%/yr"]);   // 11 → B12
+  rows.push(["Loan Enabled (0=No, 1=Yes)", params.useLoan ? 1 : 0,     ""]);       // 12 → B13
+  rows.push(["Own Capital %",              params.ownCapitalPercent,    "% of Cpv"]);// 13 → B14
+  rows.push(["Loan Interest Rate",         params.loanRate,             "%"]);      // 14 → B15
+  rows.push(["Loan Term",                  params.loanYears,            "years"]);  // 15 → B16
+
+  // ── DERIVED INPUTS (rows 16-22) ──────────────────────────────────────────
+  rows.push([]);                                                                     // 16
+  rows.push(["=== DERIVED INPUTS (auto-calculated) ==="]);                         // 17
+  rows.push([]);                                                                     // 18
+  rows.push(["Annual O&M Cost (Year 1)", comYr1_v,  sym]);  // 19 → B20
+  rows.push(["Own Capital",             ownCap_v,   sym]);  // 20 → B21
+  rows.push(["Loan Principal",          loanP_v,    sym]);  // 21 → B22
+  rows.push(["Annual Loan Payment",     annLoan_v,  sym]);  // 22 → B23
+
+  // ── KEY OUTPUTS (rows 23-31) ─────────────────────────────────────────────
+  rows.push([]);                                                                     // 23
+  rows.push(["=== KEY OUTPUTS ==="]);                                               // 24
+  rows.push([]);                                                                     // 25
+  rows.push(["LCOE",             cv(results.lcoe),           `${sym}/kWh`]);  // 26 → B27
+  rows.push(["NPV",              cv(results.npv),            sym]);            // 27 → B28
+  rows.push(["IRR",              +results.irr.toFixed(2),    "%"]);            // 28
+  rows.push(["DPBT",             +results.dpbt.toFixed(1),   "years"]);        // 29
+  rows.push(["Year-1 Revenue",   cv(yr1Rev),                 sym]);            // 30 → B31
+  rows.push(["Year-1 Energy",    params.pvPower * params.epv,"kWh"]);          // 31 → B32
+  rows.push([]);                                                                // 32
+
+  // rows.length = 33 → NPV title at 32+2=34? Let me check: 0..32 = 33 rows ✓
+  // But NPV_DATA_START=35, need rows 32,33,34 = blank already at 32, then 33=title, 34=blank, 35=header? No:
+  // rows.length=33 → blank at 32 is last pushed. Need to push: title(33), blank(34), header(35→ but data starts at 35)
+  // Actually header is at 34 and data starts at 35. Let me adjust:
+  // rows.length after row 32 blank = 33.
+  // push title → index 33, length=34
+  // push blank → index 34, length=35? No, NPV_DATA_START=35, so I need one more row.
+  // push title(33), blank(34), header(35 would be wrong—data starts at 35)
+  // I need: title(33), blank(34), header(34)... I'm off by one.
+  // Fix: NPV_DATA_START = 36, with title@33, blank@34, header@35, data@36.
+
+  // ── NPV Breakdown (rows 33+) ─────────────────────────────────────────────
+  rows.push([`NPV Breakdown — NPV = Σ(t=0..n)[(Rt−Kt)/(1+d)^t]   |   d = ${params.d}%`]); // 33
+  rows.push([]);                                                                              // 34
+  rows.push(["Year (t)", `Revenue Rt (${sym})`, `Costs Kt (${sym})`, `Rt−Kt (${sym})`, "(1+d)^t", `Disc. CF (${sym})`, `Σ Disc. CF = NPV (${sym})`]); // 35
+  // rows.length = 36 = NPV_DS ✓
+
+  results.yearlyBreakdown.forEach((b, i) => {
+    const dy = results.yearlyData[i];
+    rows.push([b.t, cv(b.revenue), cv(b.costNumerator), cv(b.cfNumerator), +b.cfDenominator.toFixed(6), cv(b.discCf), cv(dy.cumNpv)]);
+  });
+  rows.push([]);
+  rows.push(["TOTAL", cv(tot.revenue), cv(tot.costNumerator), cv(tot.cf), "—", cv(tot.discCf), cv(finalNpv)]);
+  rows.push([]);
+
+  // ── LCOE Breakdown ────────────────────────────────────────────────────────
+  rows.push([`LCOE Breakdown — LCOE = Σ[Cost_t/(1+d)^t] ÷ Σ[Energy_t/(1+d)^(t−1)]`]);
+  rows.push([]);
+  rows.push(["Year (t)", `Cost Num. (${sym})`, "(1+d)^t", `Disc. Cost (${sym})`, `Σ Disc. Cost (${sym})`, "Energy (kWh)", "(1+d)^(t-1)", "Disc. Energy (kWh)", "Σ Disc. Energy (kWh)", `Running LCOE (${sym}/kWh)`]);
+  results.yearlyBreakdown.forEach(b => {
+    const rl = b.runningEnergySum > 0 ? b.runningCostSum / b.runningEnergySum : null;
+    rows.push([
       b.t, cv(b.costNumerator), +b.discountFactor.toFixed(6),
       cv(b.discCost), cv(b.runningCostSum),
       b.energyNumerator > 0 ? +b.energyNumerator.toFixed(2) : "—",
       b.t === 0 ? "—" : +b.energyDiscountFactor.toFixed(6),
       b.discEnergy > 0 ? +b.discEnergy.toFixed(2) : "—",
       b.runningEnergySum > 0 ? +b.runningEnergySum.toFixed(2) : "—",
-      runningLcoe !== null ? cvLcoe(runningLcoe) : "—",
-    ];
+      rl !== null ? cvLcoe(rl) : "—",
+    ]);
   });
+  rows.push([]);
+  rows.push(["TOTAL", cv(tot.costNumerator), "—", cv(tot.discCost), cv(tot.discCost), +tot.energy.toFixed(2), "—", +tot.discEnergy.toFixed(2), +tot.discEnergy.toFixed(2), cvLcoe(finalLcoe)]);
+  rows.push([]);
 
-  const last = results.yearlyBreakdown[results.yearlyBreakdown.length - 1];
-  const totCostNum = results.yearlyBreakdown.reduce((a, b) => a + b.costNumerator, 0);
-  const finalLcoe = last.runningEnergySum > 0 ? last.runningCostSum / last.runningEnergySum : 0;
-  const totalRow = [
-    "TOTAL", cv(totCostNum), "—",
-    cv(last.runningCostSum), cv(last.runningCostSum),
-    +last.runningEnergySum.toFixed(2), "—", "—",
-    +last.runningEnergySum.toFixed(2), cvLcoe(finalLcoe),
-  ];
+  // ── Cash Flow Detail ──────────────────────────────────────────────────────
+  rows.push([`Cash Flow Detail (${sym})`]);
+  rows.push([]);
+  rows.push(["Year", "Energy (kWh)", `Revenue (${sym})`, `O&M Cost (${sym})`, `Investment (${sym})`, `Loan Payment (${sym})`, `Net CF (${sym})`, `Disc. CF (${sym})`, `Cum. NPV (${sym})`]);
+  results.yearlyData.forEach((dy, i) => {
+    const b = results.yearlyBreakdown[i];
+    rows.push([dy.year, +b.energy.toFixed(2), cv(b.revenue), cv(b.omCost), b.investment > 0 ? cv(b.investment) : 0, b.loan > 0 ? cv(b.loan) : 0, cv(dy.cf), cv(b.discCf), cv(dy.cumNpv)]);
+  });
+  rows.push([]);
+  rows.push(["TOTAL", +tot.energy.toFixed(2), cv(tot.revenue), cv(tot.omCost), cv(tot.investment), cv(tot.loan), cv(tot.cf), cv(tot.discCf), cv(finalNpv)]);
 
-  const ws = XLSX.utils.aoa_to_sheet([
-    [`LCOE = \u03A3[Cost\u209c/(1+d)^t] \u00F7 \u03A3[Energy\u209c/(1+d)^(t-1)]   |   d = ${params.d}%`],
-    [],
-    header,
-    ...dataRows,
-    [],
-    totalRow,
-  ]);
-  ws["!cols"] = header.map(() => ({ wch: 22 }));
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = [{ wch: 28 }, { wch: 18 }, ...Array(8).fill({ wch: 18 })];
+
+  // ── Inject Excel formulas ────────────────────────────────────────────────
+  // Row layout: 33 preamble rows (0-32), then NPV title(33)/blank(34)/header(35)/data(36..)
+  const NPV_DS  = 36;   // NPV data rows start (0-indexed)
+  const NPV_TOT = NPV_DS  + n + 2;             // 38+n
+  const LCOE_DS = NPV_TOT + 5;                 // 43+n
+  const LCOE_TOT= LCOE_DS + n + 2;             // 45+2n
+  const CF_DS   = LCOE_TOT + 5;                // 50+2n
+  const CF_TOT  = CF_DS   + n + 2;             // 52+3n
+
+  const ea = (c, r) => XLSX.utils.encode_cell({ c, r });
+  // SheetJS stores formula without leading '=' — Excel prepends it on open
+  const fn = (c, r, formula, value) => {
+    ws[ea(c, r)] = { t: 'n', f: formula.replace(/^=/, ''), v: value };
+  };
+
+  // ── Input cell aliases (all $-absolute, column B = index 1) ─────────────
+  // B3=pvPower  B4=epv  B5=pEpv_local  B6=fEpv%  B7=ep%  B8=d%  B9=n
+  // B10=cpv     B11=comPct  B12=eom%  B13=useLoan  B14=ownCapPct%  B15=loanRate%  B16=loanYears
+  // B20=comYr1  B21=ownCapital  B22=loanPrincipal  B23=annualLoanPayment
+
+  // Derived Inputs: rows 19-22 (0-indexed) → Excel B20..B23
+  fn(1, 19, `=$B$10*$B$11/100`,                              comYr1_v);
+  fn(1, 20, `=IF($B$13,$B$14/100*$B$10,$B$10)`,             ownCap_v);
+  fn(1, 21, `=IF($B$13,$B$10-$B$21,0)`,                     loanP_v);
+  fn(1, 22, `=IF($B$13,PMT($B$15/100,$B$16,-$B$22),0)`,     annLoan_v);
+
+  // Key Outputs: rows 26-31 (0-indexed) → Excel B27..B32
+  fn(1, 26, `=E${er(LCOE_TOT)}/I${er(LCOE_TOT)}`,   cv(results.lcoe));   // LCOE
+  fn(1, 27, `=G${er(NPV_TOT)}`,                       cv(results.npv));   // NPV
+  fn(1, 30, `=$B$3*$B$4*$B$5`,                        cv(yr1Rev));         // Year-1 Revenue
+  fn(1, 31, `=$B$3*$B$4`,                             params.pvPower * params.epv); // Year-1 Energy
+
+  // ── NPV Breakdown: all data columns ──────────────────────────────────────
+  // Col A(0)=Year(static), B(1)=Revenue, C(2)=Costs, D(3)=Rt-Kt, E(4)=(1+d)^t, F(5)=DiscCF, G(6)=ΣDiscCF
+  const npvDS_E = er(NPV_DS), npvDE_E = er(NPV_DS + n);
+  for (let i = 0; i <= n; i++) {
+    const r = NPV_DS + i, rE = er(r);
+    const b = results.yearlyBreakdown[i], dy = results.yearlyData[i];
+
+    // Revenue Rt: 0 at t=0, pvPower*epv*(1-fDeg)^(t-1)*pEpv*(1+epRate)^(t-1) at t≥1
+    fn(1, r, `=IF($A${rE}=0,0,$B$3*$B$4*(1-$B$6/100)^($A${rE}-1)*$B$5*(1+$B$7/100)^($A${rE}-1))`,
+       cv(b.revenue));
+
+    // Costs Kt: ownCapital at t=0, O&M*(1+eom)^(t-1) + loanPayment at t≥1
+    fn(2, r, `=IF($A${rE}=0,$B$21,$B$20*(1+$B$12/100)^($A${rE}-1)+IF($A${rE}<=$B$16,$B$23,0))`,
+       cv(b.costNumerator));
+
+    fn(3, r, `=$B${rE}-$C${rE}`,                                            cv(b.cfNumerator));   // Rt-Kt
+    fn(4, r, `=(1+$B$8/100)^$A${rE}`,                                       +b.cfDenominator.toFixed(6)); // (1+d)^t
+    fn(5, r, `=$D${rE}/$E${rE}`,                                            cv(b.discCf));         // Disc.CF
+    fn(6, r, i === 0 ? `=$F${rE}` : `=$G${er(NPV_DS+i-1)}+$F${rE}`,        cv(dy.cumNpv));        // Σ NPV
+  }
+  { const r = NPV_TOT;
+    fn(1, r, `=SUM(B${npvDS_E}:B${npvDE_E})`, cv(tot.revenue));
+    fn(2, r, `=SUM(C${npvDS_E}:C${npvDE_E})`, cv(tot.costNumerator));
+    fn(3, r, `=SUM(D${npvDS_E}:D${npvDE_E})`, cv(tot.cf));
+    fn(5, r, `=SUM(F${npvDS_E}:F${npvDE_E})`, cv(tot.discCf));
+    fn(6, r, `=$G${npvDE_E}`,                  cv(finalNpv));
+  }
+
+  // ── LCOE Breakdown: all data columns ─────────────────────────────────────
+  // A=Year, B=CostNum, C=(1+d)^t, D=DiscCost, E=ΣDiscCost, F=Energy, G=(1+d)^(t-1), H=DiscEnergy, I=ΣDiscEnergy, J=RunLCOE
+  const lcoeDS_E = er(LCOE_DS), lcoeDE_E = er(LCOE_DS + n);
+  for (let i = 0; i <= n; i++) {
+    const r = LCOE_DS + i, rE = er(r);
+    const b = results.yearlyBreakdown[i];
+
+    // Cost Numerator (same formula as NPV Costs Kt)
+    fn(1, r, `=IF($A${rE}=0,$B$21,$B$20*(1+$B$12/100)^($A${rE}-1)+IF($A${rE}<=$B$16,$B$23,0))`,
+       cv(b.costNumerator));
+    fn(2, r, `=(1+$B$8/100)^$A${rE}`,                                           +b.discountFactor.toFixed(6)); // (1+d)^t
+    fn(3, r, `=$B${rE}/$C${rE}`,                                                cv(b.discCost));    // Disc.Cost
+    fn(4, r, i === 0 ? `=$D${rE}` : `=$E${er(LCOE_DS+i-1)}+$D${rE}`,           cv(b.runningCostSum)); // Σ Disc.Cost
+    fn(5, r, `=IF($A${rE}=0,0,$B$3*$B$4*(1-$B$6/100)^($A${rE}-1))`,
+       b.energyNumerator > 0 ? +b.energyNumerator.toFixed(2) : 0); // Energy
+    if (i > 0) {
+      fn(6, r, `=(1+$B$8/100)^($A${rE}-1)`,                                     +b.energyDiscountFactor.toFixed(6)); // (1+d)^(t-1)
+      fn(7, r, `=$F${rE}/$G${rE}`,                                               +b.discEnergy.toFixed(2));  // Disc.Energy
+      fn(8, r, i === 1 ? `=$H${rE}` : `=$I${er(LCOE_DS+i-1)}+$H${rE}`,         +b.runningEnergySum.toFixed(2)); // Σ Disc.Energy
+      const rl = b.runningEnergySum > 0 ? b.runningCostSum / b.runningEnergySum : 0;
+      fn(9, r, `=$E${rE}/$I${rE}`,                                               cvLcoe(rl));        // Running LCOE
+    }
+  }
+  { const r = LCOE_TOT, rE = er(r);
+    fn(1, r, `=SUM(B${lcoeDS_E}:B${lcoeDE_E})`, cv(tot.costNumerator));
+    fn(3, r, `=SUM(D${lcoeDS_E}:D${lcoeDE_E})`, cv(tot.discCost));
+    fn(4, r, `=$E${lcoeDE_E}`,                   cv(tot.discCost));
+    fn(5, r, `=SUM(F${lcoeDS_E}:F${lcoeDE_E})`, +tot.energy.toFixed(2));
+    fn(7, r, `=SUM(H${lcoeDS_E}:H${lcoeDE_E})`, +tot.discEnergy.toFixed(2));
+    fn(8, r, `=$I${lcoeDE_E}`,                   +tot.discEnergy.toFixed(2));
+    fn(9, r, `=$E${rE}/$I${rE}`,                 cvLcoe(finalLcoe));
+  }
+
+  // ── Cash Flow Detail: all data columns ───────────────────────────────────
+  // A=Year, B=Energy, C=Revenue, D=O&M, E=Investment, F=Loan, G=NetCF, H=DiscCF, I=CumNPV
+  const cfDS_E = er(CF_DS), cfDE_E = er(CF_DS + n);
+  for (let i = 0; i <= n; i++) {
+    const r = CF_DS + i, rE = er(r);
+    const dy = results.yearlyData[i], b = results.yearlyBreakdown[i];
+
+    fn(1, r, `=IF($A${rE}=0,0,$B$3*$B$4*(1-$B$6/100)^($A${rE}-1))`,
+       +b.energy.toFixed(2));  // Energy
+    fn(2, r, `=IF($A${rE}=0,0,$B$3*$B$4*(1-$B$6/100)^($A${rE}-1)*$B$5*(1+$B$7/100)^($A${rE}-1))`,
+       cv(b.revenue));  // Revenue
+    fn(3, r, `=IF($A${rE}=0,0,$B$20*(1+$B$12/100)^($A${rE}-1))`,
+       cv(b.omCost));   // O&M
+    fn(4, r, `=IF($A${rE}=0,$B$21,0)`,                                          b.investment > 0 ? cv(b.investment) : 0); // Investment
+    fn(5, r, `=IF($A${rE}=0,0,IF($A${rE}<=$B$16,$B$23,0))`,                    b.loan > 0 ? cv(b.loan) : 0); // Loan
+    fn(6, r, `=$C${rE}-$D${rE}-$E${rE}-$F${rE}`,                               cv(dy.cf));    // Net CF
+    // Disc.CF: Net CF ÷ (1+d)^t — reuse (1+d)^t from LCOE col C at same year offset
+    fn(7, r, `=$G${rE}/$C${er(LCOE_DS+i)}`,                                     cv(b.discCf)); // Disc.CF
+    fn(8, r, i === 0 ? `=$H${rE}` : `=$I${er(CF_DS+i-1)}+$H${rE}`,             cv(dy.cumNpv)); // Cum.NPV
+  }
+  { const r = CF_TOT;
+    fn(1, r, `=SUM(B${cfDS_E}:B${cfDE_E})`, +tot.energy.toFixed(2));
+    fn(2, r, `=SUM(C${cfDS_E}:C${cfDE_E})`, cv(tot.revenue));
+    fn(3, r, `=SUM(D${cfDS_E}:D${cfDE_E})`, cv(tot.omCost));
+    fn(4, r, `=SUM(E${cfDS_E}:E${cfDE_E})`, cv(tot.investment));
+    fn(5, r, `=SUM(F${cfDS_E}:F${cfDE_E})`, cv(tot.loan));
+    fn(6, r, `=SUM(G${cfDS_E}:G${cfDE_E})`, cv(tot.cf));
+    fn(7, r, `=SUM(H${cfDS_E}:H${cfDE_E})`, cv(tot.discCf));
+    fn(8, r, `=$I${cfDE_E}`,                 cv(finalNpv));
+  }
+
   return ws;
 }
 
-function exportExcel(params, results) {
+function exportExcel(profiles, currency) {
+  if (profiles.length === 0) return;
   const wb = XLSX.utils.book_new();
-  for (const cur of ["USD", "UZS"]) {
-    XLSX.utils.book_append_sheet(wb, makeSummarySheet(params, results, cur), `Summary (${cur})`);
-    XLSX.utils.book_append_sheet(wb, makeCashFlowSheet(params, results, cur), `Cash Flow (${cur})`);
-    XLSX.utils.book_append_sheet(wb, makeNpvSheet(params, results, cur), `NPV Breakdown (${cur})`);
-    XLSX.utils.book_append_sheet(wb, makeLcoeSheet(params, results, cur), `LCOE Breakdown (${cur})`);
+  XLSX.utils.book_append_sheet(wb, makeSummaryComparisonSheet(profiles, currency), "Summary");
+  for (const profile of profiles) {
+    const name = profile.name.slice(0, 31).replace(/[:\\/?\*\[\]]/g, "_");
+    XLSX.utils.book_append_sheet(wb, makeProfileDetailSheet(profile.params, profile.results, currency), name);
   }
   XLSX.writeFile(wb, "PV_Calculator_Results.xlsx");
 }
@@ -728,8 +859,25 @@ export default function PVCalculator() {
   const [params, setParams] = useState(DEFAULT_PARAMS);
   const [currency, setCurrency] = useState("USD");
   const [showDetails, setShowDetails] = useState(false);
+  const [profiles, setProfiles] = useState([]);
+  const [profileName, setProfileName] = useState("Profile 1");
   const update = useCallback((key, val) => setParams(prev => ({ ...prev, [key]: val })), []);
   const results = useMemo(() => calculate(params), [params]);
+
+  const saveProfile = useCallback(() => {
+    const name = profileName.trim() || `Profile ${profiles.length + 1}`;
+    setProfiles(prev => [...prev, { id: Date.now(), name, params: { ...params }, results }]);
+    setProfileName(`Profile ${profiles.length + 2}`);
+  }, [profileName, params, results, profiles.length]);
+
+  const deleteProfile = useCallback((id) => {
+    setProfiles(prev => prev.filter(p => p.id !== id));
+  }, []);
+
+  const loadProfile = useCallback((profile) => {
+    setParams(profile.params);
+    setProfileName(profile.name);
+  }, []);
 
   const rate = params.exchangeRate;
   const m = v => fmtMoney(v, currency, rate);
@@ -766,7 +914,10 @@ export default function PVCalculator() {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
             <CurrencyToggle value={currency} onChange={setCurrency} />
             <button
-              onClick={() => exportExcel(params, results)}
+              onClick={() => exportExcel(
+                profiles.length > 0 ? profiles : [{ id: 0, name: "Current", params, results }],
+                currency
+              )}
               style={{
                 padding: "6px 18px", borderRadius: 9, border: "1px solid #2a5c2a",
                 background: "#0e2a0e", color: "#4ecdc4", fontSize: 13,
@@ -775,7 +926,7 @@ export default function PVCalculator() {
               onMouseEnter={e => { e.target.style.background = "#143a14"; e.target.style.borderColor = "#4ecdc4"; }}
               onMouseLeave={e => { e.target.style.background = "#0e2a0e"; e.target.style.borderColor = "#2a5c2a"; }}
             >
-              ↓ Download Excel
+              ↓ Download Excel{profiles.length > 0 ? ` (${profiles.length})` : ""}
             </button>
           </div>
         </div>
@@ -786,6 +937,41 @@ export default function PVCalculator() {
             background: "#111e30", border: "1px solid #1e3050",
             borderRadius: 16, padding: 20, maxHeight: "88vh", overflowY: "auto",
           }}>
+            {/* Profiles Section */}
+            <div style={{ background: "#0e1a2a", border: "1px solid #1e3050", borderRadius: 10, padding: "12px 14px", marginBottom: 18 }}>
+              <div style={{ fontSize: 12, color: "#5b9cf6", fontWeight: 600, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.05em", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span>Profiles</span>
+                {profiles.length > 0 && <span style={{ color: "#4ecdc4", fontWeight: 700 }}>{profiles.length} saved</span>}
+              </div>
+              {profiles.length > 0 && (
+                <div style={{ marginBottom: 10 }}>
+                  {profiles.map(p => (
+                    <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #1a2d45" }}>
+                      <span style={{ fontSize: 12, color: "#c8d9ed", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 120 }}>{p.name}</span>
+                      <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
+                        <button onClick={() => loadProfile(p)} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, border: "1px solid #2a4060", background: "#162032", color: "#5b9cf6", cursor: "pointer" }}>Load</button>
+                        <button onClick={() => deleteProfile(p.id)} style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, border: "1px solid #3a2020", background: "#1e0e0e", color: "#e85d75", cursor: "pointer" }}>×</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 6 }}>
+                <input
+                  type="text"
+                  value={profileName}
+                  onChange={e => setProfileName(e.target.value)}
+                  placeholder="Profile name..."
+                  style={{ flex: 1, padding: "6px 10px", background: "#162032", border: "1px solid #2a3f5c", borderRadius: 6, color: "#e2ecf7", fontSize: 12, outline: "none", minWidth: 0 }}
+                  onFocus={e => e.target.style.borderColor = "#4a90d9"}
+                  onBlur={e => e.target.style.borderColor = "#2a3f5c"}
+                />
+                <button onClick={saveProfile} style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #2a5c2a", background: "#0e2a0e", color: "#4ecdc4", fontSize: 12, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>
+                  Save
+                </button>
+              </div>
+            </div>
+
             <div style={{ background: "#0e2240", border: "1px solid #1e4070", borderRadius: 10, padding: "12px 14px", marginBottom: 18 }}>
               <div style={{ fontSize: 12, color: "#5b9cf6", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>
                 Exchange Rate
